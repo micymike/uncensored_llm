@@ -5,8 +5,7 @@ import string
 from datetime import datetime
 from mitmproxy import http
 
-url = "https://authentication.cardinalcommerce.com/ThreeDSecure/V2_1_0/CReq?oid=5c4b1e480a45b50a82ec8bb6&tid=a276317c-1cb5-42b4-ae28-649926babf3f"
-url2 = "https://www.binance.com/en/crypto/result/buy/N01730297367186481152031782/card"
+
 
 class WebsiteOTPTester:
     def __init__(self, verify_url, send_url=None, otp_length=6):
