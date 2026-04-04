@@ -9,8 +9,8 @@ import sys
 import io
 import contextlib
 
-MODEL_PATH = os.getenv("LLAMA_MODEL_PATH", "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q8_0.gguf")
-REPO_ID = os.getenv("LLAMA_REPO_ID", "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive")
+MODEL_PATH = os.getenv("LLAMA_MODEL_PATH", "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf")
+REPO_ID = os.getenv("LLAMA_REPO_ID", "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf")
 
 # ---------------
 # Model loader
