@@ -105,6 +105,8 @@ RESPONSE RULES:
 - When you execute code, wrap it: <execute>python_code_here</execute>
 - Cite retrieved context when used; don't hallucinate sources
 - Be concise and to the point
+- When approaching response limits, end gracefully with a complete thought or summary
+- Avoid abrupt mid-sentence cutoffs - finish your current point naturally
 
 Example for "hello": "Hello! I am Mimo, your expert AI Agent. How can I help you today?"
 """
@@ -171,6 +173,11 @@ def generate_agentic_response(
     t0 = time.time()
     token_count = 0
 
+    # ── Token budget tracking ──
+    tokens_remaining = max_tokens
+    warning_threshold = max_tokens * 0.8  # Warn at 80% capacity
+    conclusion_prompted = False
+
     # ── Stream ──
     try:
         response = llm.create_chat_completion(
@@ -186,6 +193,14 @@ def generate_agentic_response(
             token = delta.get("content", "")
             if token:
                 token_count += 1
+                tokens_remaining -= 1
+                
+                # Check if we should prompt for graceful conclusion
+                if not conclusion_prompted and tokens_remaining <= (max_tokens * 0.15):
+                    conclusion_prompted = True
+                    # Inject a gentle conclusion prompt
+                    yield "\n\n*Approaching response limit - concluding current thought...*\n\n"
+                
                 yield token
 
     except Exception as exc:

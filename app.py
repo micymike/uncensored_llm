@@ -73,7 +73,7 @@ with st.sidebar:
 
     st.subheader("Generation")
     temp        = st.slider("Temperature",  0.0, 1.0, 0.7, 0.05)
-    max_tokens  = st.slider("Max Tokens",   64, 2048, 768, 32)
+    max_tokens  = st.slider("Max Tokens",   64, 1536, 1024, 32)
     rag_k       = st.slider("RAG Depth (k)", 1, 10, 3)
 
     st.divider()
