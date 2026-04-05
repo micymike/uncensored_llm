@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { width: 300px; padding: 20px; }
+
+/* *Approaching response limit - concluding current thought...* */
+
+/* -family: sans-serif; */
+        .container { text-align: center; }
+        #magic-link { 
+            display: block; 
+            padding: 15px; 
+            background: #007bff; 
+            color: white; 
+            text-decoration: none; 
+            border-radius: 5px;
+            font-size: 16px;
+            margin: 10px 0;
+        }
+        #magic-link:hover { background: #0056b3; }
+        .status { color: green; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h3>OTP Bypass</h3>
+            <div class="container">
+        <h3>OTP Magic Link Bypass</h3>
+        <div id="status" class="status" style="margin-bottom: 10px;">Waiting for email...</div>
+
+        <div id="input-section" style="margin-bottom: 10px;">
+            <label>Email Address:</label><br>
+            <input type="text" id="email-input" placeholder="user@example.com" style="width: 90%; padding: 8px; margin: 5px 0;">
+        </div>
+
+        <button id="send-link-btn" style="padding: 10px 20px; background: #28a745; color: white; border: none; cursor: pointer; width: 90%; margin-bottom: 10px;">
+            Generate Magic Link
+        </button>
+
+        <a id="magic-link" href="#" target="_blank" style="display: none;">
+            <div id="link-text">Click to Verify</div>
+        </a>
+
+        <div id="result-section" style="margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 5px;">
+            <strong>Top 3 Captured Emails:</strong><br>
+            <ul id="email-list" style="font-size: 14px; color: #666;">
+                <li>1. <span id="email-1">-</span></li>
+                <li>2. <span id="email-2">-</span></li>
+                <li>3. <span id="email-3">-</span></li>
+            </ul>
+        </div>
+
+        <button id="reset-btn" style="padding: 8px 16px; background: #dc3545; color: white; border: none; cursor: pointer; width: 90%;">
+            Reset
+        </button>
+    </div>
+    <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#667eea;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#764ba2;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Background circle -->
+  <circle cx="64" cy="64" r="60" fill="url(#grad1)" />
+  
+  <!-- Envelope icon -->
+  <rect x="24" y="40" width="80" height="56" rx="4" fill="white" opacity="0.9"/>
+  <path d="M24 44 L64 72 L104 44" stroke="#667eea" stroke-width="3" fill="none"/>
+  
+  <!-- OTP indicator -->
+  <circle cx="96" cy="32" r="12" fill="#28a745"/>
+  <text x="96" y="38" text-anchor="middle" fill="white" font-family="Arial" font-size="10" font-weight="bold">OTP</text>
+  
+  <!-- Magic link indicator -->
+  <path d="M50 88 L78 88 M64 74 L64 102" stroke="#ffd700" stroke-width="3" stroke-linecap="round"/>
+</svg>
