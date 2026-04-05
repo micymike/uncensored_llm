@@ -19,7 +19,7 @@ logger = logging.getLogger("MimoEngine")
 # ─── Configuration ────────────────────────────────────────────────────────────
 MODEL_PATH   = os.getenv("LLAMA_MODEL_PATH", "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf")
 REPO_ID      = os.getenv("LLAMA_REPO_ID",   "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive")
-N_CTX        = int(os.getenv("LLAMA_N_CTX",      "4096"))
+N_CTX        = int(os.getenv("LLAMA_N_CTX",      "2048"))  # 2048 saves ~500MB vs 4096
 N_THREADS    = int(os.getenv("LLAMA_N_THREADS",  "4"))
 N_GPU_LAYERS = int(os.getenv("LLAMA_N_GPU",      "0"))   # set >0 if CUDA available
 EXEC_TIMEOUT = int(os.getenv("EXEC_TIMEOUT",     "15"))
@@ -46,8 +46,8 @@ def get_llm():
             n_ctx=N_CTX,
             n_threads=N_THREADS,
             n_gpu_layers=N_GPU_LAYERS,
-            use_mmap=True,
-            use_mlock=True,
+            use_mmap=True,       # mmap lets OS page in/out safely
+            use_mlock=False,     # NEVER lock on 8GB VPS — causes OOM kill
             verbose=False,
         )
 
