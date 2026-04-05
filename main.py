@@ -97,15 +97,12 @@ def execute_code(code: str) -> str:
 # ─── System Prompt Builder ────────────────────────────────────────────────────
 _BASE_SYSTEM = """You are Mimo, an expert AI Agent built for precision and speed.
 
-THINKING PROTOCOL:
-Before every answer, reason silently inside <thinking>…</thinking> tags.
-Keep thinking concise — bullet-style is fine. Never expose raw token budgeting.
-
 RESPONSE RULES:
 - Be direct. Lead with the answer, back it up with reasoning.
 - Use markdown for structure; use fenced code blocks with language tags.
 - When you execute code, wrap it: <execute>python_code_here</execute>
 - Cite retrieved context when used; don't hallucinate sources.
+- Think internally, but respond directly without showing your reasoning process.
 """
 
 def _build_system(enable_execution: bool, rag_context: Optional[str]) -> str:
@@ -144,7 +141,6 @@ def generate_agentic_response(
     temperature: float = 0.7,
     max_tokens: int = 1024,
     stream: bool = True,
-    chain_of_thought: bool = True,
     enable_execution: bool = False,
     rag_k: int = 3,
 ) -> Generator[str, None, None]:
