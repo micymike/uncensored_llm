@@ -30,6 +30,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger("MimoFlask")
 
+# ─── Global Model Instance (Prevent Multiple Loading) ───────────────────────────
+_model_instance = None
+_model_lock = None
+
+def get_global_model():
+    """Get or create a single global model instance."""
+    global _model_instance, _model_lock
+    if _model_instance is None:
+        if _model_lock is None:
+            import threading
+            _model_lock = threading.Lock()
+        with _model_lock:
+            if _model_instance is None:
+                logger.info("Loading global model instance...")
+                _model_instance = get_llm()
+                logger.info("Global model instance loaded successfully")
+    return _model_instance
+
 # ─── API Helper Functions ─────────────────────────────────────────────────────
 
 def generate_response_id() -> str:
@@ -49,13 +67,24 @@ def index():
 
 @app.route("/api/v1/health")
 def api_health():
-    """Health check endpoint."""
+    """Health check endpoint with memory optimization."""
     try:
-        llm = get_llm()
+        # Check if model is loaded without loading it
+        if _model_instance is not None:
+            model_status = True
+            model_loaded = "loaded"
+        else:
+            # Quick check if we can load the model (but don't actually load it)
+            model_path = os.getenv("LLAMA_MODEL_PATH", "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf")
+            model_status = os.path.exists(model_path)
+            model_loaded = "available" if model_status else "not_found"
+        
         return jsonify({
             "status": "healthy",
-            "model_loaded": True,
-            "timestamp": datetime.now().isoformat()
+            "model_loaded": model_loaded,
+            "model_status": model_status,
+            "timestamp": datetime.now().isoformat(),
+            "memory_optimized": True
         })
     except Exception as e:
         logger.error(f"Health check failed: {e}")
@@ -85,7 +114,7 @@ def api_models():
 
 @app.route("/api/v1/chat/completions", methods=["POST"])
 def api_chat_completions():
-    """Chat completions endpoint - OpenAI compatible."""
+    """Chat completions endpoint - OpenAI compatible with memory optimization."""
     try:
         # Get request data
         request_data = request.get_json()
@@ -114,12 +143,16 @@ def api_chat_completions():
             for msg in request_data["messages"]
         ]
         
-        # Get RAG context
+        # Get RAG context (with error handling)
         rag_ctx = None
-        if messages and messages[-1].get("role") == "user":
-            query = messages[-1].get("content", "")
-            if query.strip():
-                rag_ctx = _rag_context(query, k=3)
+        try:
+            if messages and messages[-1].get("role") == "user":
+                query = messages[-1].get("content", "")
+                if query.strip():
+                    rag_ctx = _rag_context(query, k=3)
+        except Exception as rag_error:
+            logger.warning(f"RAG retrieval failed: {rag_error}")
+            rag_ctx = None
         
         # Build system prompt
         system_content = _build_system(False, rag_ctx)
@@ -130,7 +163,7 @@ def api_chat_completions():
         elif messages:
             messages[0]["content"] = system_content
         
-        # Generate response
+        # Generate response using global model
         response_id = generate_response_id()
         created_time = int(time.time())
         
@@ -138,22 +171,34 @@ def api_chat_completions():
         prompt_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in messages])
         prompt_tokens = int(estimate_tokens(prompt_text))
         
-        # Generate completion
+        # Get global model instance
+        model = get_global_model()
+        
+        # Generate completion with memory optimization
         completion_text = ""
         token_count = 0
         
-        for token in generate_agentic_response(
-            messages=messages,
-            temperature=request_data.get("temperature", 0.7),
-            max_tokens=request_data.get("max_tokens", 1024),
-            stream=True,
-            enable_execution=False,
-            rag_k=3
-        ):
-            if token.startswith("\x00STATS:"):
-                continue
-            completion_text += token
-            token_count += 1
+        try:
+            for token in generate_agentic_response(
+                messages=messages,
+                temperature=request_data.get("temperature", 0.7),
+                max_tokens=min(request_data.get("max_tokens", 1024), 1536),  # Cap max tokens
+                stream=True,
+                enable_execution=False,
+                rag_k=3
+            ):
+                if token.startswith("\x00STATS:"):
+                    continue
+                completion_text += token
+                token_count += 1
+                
+                # Prevent infinite loops
+                if token_count > 2048:
+                    break
+                    
+        except Exception as gen_error:
+            logger.error(f"Generation failed: {gen_error}")
+            completion_text = f"I apologize, but I encountered an error while generating the response: {str(gen_error)}"
         
         completion_tokens = token_count
         
@@ -241,6 +286,11 @@ def legacy_chat_completions():
 # ─── Run Application ───────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # Set production environment variables
+    os.environ.setdefault("LLAMA_N_CTX", "2048")  # Reduce context size
+    os.environ.setdefault("LLAMA_N_THREADS", "4")  # Optimize threads
+    os.environ.setdefault("FLASK_ENV", "production")
+    
     print("🧠 Mimo Flask Application Starting...")
     print("🌐 Web UI: http://localhost:8501")
     print("📡 API Health: http://localhost:8501/api/v1/health")
@@ -250,9 +300,22 @@ if __name__ == "__main__":
     print('   API Base URL: http://localhost:8501/api/v1')
     print('   API Key: any-string (not validated)')
     print('   Model: mimo')
+    print("\n🚀 Production Mode - Memory Optimized")
     
+    # Check if running with gunicorn (production)
+    if 'gunicorn' in sys.modules or os.getenv('GUNICORN_CMD_ARGS'):
+        print("🔄 Running with Gunicorn - Pre-loading model...")
+        get_global_model()
+        print("✅ Model pre-loaded for production")
+    else:
+        print("⚠️  Development mode detected")
+        print("💡 For production, use: gunicorn --workers 1 --timeout 300 app:app")
+    
+    # Flask development server (for testing only)
     app.run(
         host="0.0.0.0",
         port=8501,
-        debug=True
+        debug=False,  # Disable debug for production
+        threaded=True,
+        use_reloader=False  # Prevent multiple model loads
     )
