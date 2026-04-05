@@ -120,11 +120,15 @@ def strip_sentinel(text: str):
 def render_message(text: str, stats=None):
     """
     Render a completed assistant message:
+      - Convert <execute> blocks to fenced code blocks
       - Show markdown + code blocks
       - Show stats badge
     """
+    # Convert <execute> blocks to fenced code blocks for display
+    display_text = EXEC_RE.sub(lambda m: f"```python\n{m.group(1).strip()}\n```", text)
+    
     # Render main response
-    _render_markdown_with_code(text)
+    _render_markdown_with_code(display_text)
 
     # Stats badge
     if stats:
@@ -253,20 +257,12 @@ if user_prompt:
                 raw_output += token
                 # Don't render sentinel tokens
                 if "\x00STATS:" not in raw_output:
-                    stream_placeholder.markdown(raw_output + " ▌")
+                    # Convert <execute> blocks to fenced code for display
+                    display = EXEC_RE.sub(lambda m: f"```python\n{m.group(1).strip()}\n```", raw_output)
+                    stream_placeholder.markdown(display + " ▌")
 
             # ── Post-stream processing ──
             clean_output, stats = strip_sentinel(raw_output)
-
-            # Handle code execution
-            if enable_exec and "<execute>" in clean_output:
-                status.update(label="Executing code…", state="running")
-                clean_output = run_code_blocks(
-                    clean_output,
-                    st.session_state.messages,
-                    temp,
-                    max_tokens,
-                )
 
             status.update(label="✅ Done", state="complete", expanded=False)
 
