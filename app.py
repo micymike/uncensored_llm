@@ -7,7 +7,6 @@ Improvements over v1:
   - Live latency / tok/s badge
   - <execute> blocks auto-run with result injection and display
   - YOLO auto-fix loop with depth limit
-  - Model warm-up spinner on first load
   - Clean message history (no stale system injections in UI)
   - Mobile-friendly layout
 """
@@ -117,18 +116,6 @@ with st.sidebar:
 # ─── Session State Init ───────────────────────────────────────────────────────
 if "messages"     not in st.session_state: st.session_state.messages     = []
 if "terminal_log" not in st.session_state: st.session_state.terminal_log = []
-if "model_ready"  not in st.session_state: st.session_state.model_ready  = False
-
-# ─── Model Warm-up ────────────────────────────────────────────────────────────
-if not st.session_state.model_ready:
-    with st.spinner("🔄 Loading model into memory — one moment…"):
-        try:
-            from main import get_llm
-            get_llm()
-            st.session_state.model_ready = True
-        except Exception as e:
-            st.error(f"Model load failed: {e}")
-            st.stop()
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -242,7 +229,7 @@ def run_code_blocks(text: str, messages: list, temp: float, max_tokens: int) -> 
 st.title("🧠 Mimo · Agentic Chat")
 col_left, col_right = st.columns([3, 1])
 with col_right:
-    st.caption(f"🟢 Model ready · CPU · {max_tokens} max tokens")
+    st.caption(f"CPU · {max_tokens} max tokens")
 
 st.divider()
 
