@@ -1,133 +1,195 @@
 import os
-import streamlit as st
-from llama_cpp import Llama
-
-from rag import retrieve
-
-import subprocess
 import sys
-import io
-import contextlib
+import subprocess
+import logging
+import time
+import hashlib
+import threading
+from functools import lru_cache
+from typing import Generator, List, Dict, Optional
 
-MODEL_PATH = os.getenv("LLAMA_MODEL_PATH", "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q8_0.gguf")
-REPO_ID = os.getenv("LLAMA_REPO_ID", "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive")
+# ─── Logging ─────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+logger = logging.getLogger("MimoEngine")
 
-# ---------------
-# Model loader
-# ---------------
-@st.cache_resource
+# ─── Configuration ────────────────────────────────────────────────────────────
+MODEL_PATH   = os.getenv("LLAMA_MODEL_PATH", "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf")
+REPO_ID      = os.getenv("LLAMA_REPO_ID",   "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive")
+N_CTX        = int(os.getenv("LLAMA_N_CTX",      "2048"))  # 2048 saves ~500MB vs 4096
+N_THREADS    = int(os.getenv("LLAMA_N_THREADS",  "4"))
+N_GPU_LAYERS = int(os.getenv("LLAMA_N_GPU",      "0"))   # set >0 if CUDA available
+EXEC_TIMEOUT = int(os.getenv("EXEC_TIMEOUT",     "15"))
+
+# ─── Model Singleton (thread-safe lazy load) ──────────────────────────────────
+_llm_lock   = threading.Lock()
+_llm_cache  = {"model": None}
+
 def get_llm():
-    """Loads the model once and keeps it in memory."""
-    if os.path.exists(MODEL_PATH):
-        return Llama(model_path=MODEL_PATH, n_ctx=4096)
+    """Thread-safe singleton loader. First call pays the load cost; subsequent calls are free."""
+    if _llm_cache["model"] is not None:
+        return _llm_cache["model"]
 
-    return Llama.from_pretrained(repo_id=REPO_ID, filename=MODEL_PATH, n_ctx=4096)
+    with _llm_lock:
+        if _llm_cache["model"] is not None:   # double-checked locking
+            return _llm_cache["model"]
 
-# ---------------
-# Code execution tool (sandbox)
-# ---------------
-def execute_code(code):
-    """Execute Python code in a safe subprocess and return output."""
+        logger.info("Loading model…")
+        t0 = time.time()
+
+        from llama_cpp import Llama
+
+        kwargs = dict(
+            n_ctx=N_CTX,
+            n_threads=N_THREADS,
+            n_gpu_layers=N_GPU_LAYERS,
+            use_mmap=True,       # mmap lets OS page in/out safely
+            use_mlock=False,     # NEVER lock on 8GB VPS — causes OOM kill
+            verbose=False,
+        )
+
+        if os.path.exists(MODEL_PATH):
+            logger.info(f"Loading from local path: {MODEL_PATH}")
+            model = Llama(model_path=MODEL_PATH, **kwargs)
+        else:
+            logger.info(f"Downloading from HF: {REPO_ID}")
+            model = Llama.from_pretrained(repo_id=REPO_ID, filename=MODEL_PATH, **kwargs)
+
+        _llm_cache["model"] = model
+        logger.info(f"Model ready in {time.time() - t0:.1f}s")
+        return model
+
+
+# ─── Safe Code Execution ──────────────────────────────────────────────────────
+def execute_code(code: str) -> str:
+    """
+    Run arbitrary Python in a subprocess with a hard timeout.
+    Returns a structured result string.
+    """
     try:
-        # Use subprocess to run code in isolation
         result = subprocess.run(
             [sys.executable, "-c", code],
             capture_output=True,
             text=True,
-            timeout=10  # 10 second timeout
+            timeout=EXEC_TIMEOUT,
         )
-        output = result.stdout
-        error = result.stderr
-        return f"Output:\n{output}\nError:\n{error}" if error else f"Output:\n{output}"
+        stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
+
+        parts = []
+        if stdout:
+            parts.append(f"stdout:\n{stdout}")
+        if stderr:
+            parts.append(f"stderr:\n{stderr}")
+        if not parts:
+            parts.append("(no output)")
+        return "\n\n".join(parts)
+
     except subprocess.TimeoutExpired:
-        return "Execution timed out."
-    except Exception as e:
-        return f"Execution failed: {e}"
+        return f"⏱ Execution timed out after {EXEC_TIMEOUT}s."
+    except Exception as exc:
+        return f"❌ Execution failed: {exc}"
 
 
-# ---------------
-# Agentic response builder (ReAct style)
-# ---------------
-def generate_agentic_response(messages, temperature=0.7, max_tokens=1024, stream=True, chain_of_thought=False, enable_execution=False):
-    """Yields the model text in chunks for streaming in the UI."""
+# ─── System Prompt Builder ────────────────────────────────────────────────────
+_BASE_SYSTEM = """You are Mimo, an expert AI Agent built for precision and speed.
+
+RESPONSE RULES:
+- Be direct. Lead with the answer, back it up with reasoning.
+- Use markdown for structure; use fenced code blocks with language tags.
+- When you execute code, wrap it: <execute>python_code_here</execute>
+- Cite retrieved context when used; don't hallucinate sources.
+- Think internally, but respond directly without showing your reasoning process.
+"""
+
+def _build_system(enable_execution: bool, rag_context: Optional[str]) -> str:
+    system = _BASE_SYSTEM.strip()
+    if enable_execution:
+        system += "\n\nCODE EXECUTION: Wrap runnable Python in <execute>…</execute>. You WILL see the output."
+    if rag_context:
+        system += f"\n\nRETRIEVED CONTEXT (use if relevant, cite by saying 'From docs:'):\n{rag_context}"
+    return system
+
+
+# ─── RAG Helper ───────────────────────────────────────────────────────────────
+@lru_cache(maxsize=128)
+def _cached_retrieve(query_hash: str, query: str, k: int) -> tuple:
+    """LRU-cached retrieval so identical queries don't hit ChromaDB twice."""
+    try:
+        from rag import retrieve
+        snippets = retrieve(query, k=k)
+        return tuple(s["text"] for s in snippets)
+    except Exception as exc:
+        logger.warning(f"RAG retrieval failed: {exc}")
+        return ()
+
+
+def _rag_context(query: str, k: int = 3) -> Optional[str]:
+    key = hashlib.md5(query.encode()).hexdigest()
+    snippets = _cached_retrieve(key, query, k)
+    if not snippets:
+        return None
+    return "\n---\n".join(snippets)
+
+
+# ─── Core Generator ───────────────────────────────────────────────────────────
+def generate_agentic_response(
+    messages: List[Dict],
+    temperature: float = 0.7,
+    max_tokens: int = 1024,
+    stream: bool = True,
+    enable_execution: bool = False,
+    rag_k: int = 3,
+) -> Generator[str, None, None]:
+    """
+    Yields text tokens one-by-one.
+    Handles RAG injection, system prompt assembly, and safe streaming.
+    """
     llm = get_llm()
 
-    agent_system_prompt = {
-        "role": "system",
-        "content": (
-            "You are an expert AI Agent. For complex coding tasks: "
-            "1. Analyze the requirements. 2. Plan the solution step-by-step. "
-            "3. Write clean, efficient code. 4. Self-critique for potential bugs. "
-            "For operational commands, reason and act in ReAct style if needed. "
-        ),
-    }
-    
-    cot_prompt = None
-    if chain_of_thought:
-        cot_prompt = {
-            "role": "system",
-            "content": (
-                "To show deeper reasoning, explicitly outline your chain of thought before "
-                "you provide the final code. Format as:\n" 
-                "[Thought 1], [Thought 2], ... , then final response.\n"
-                "Include a clear \"Final Answer:\" section at the end."
-            ),
-        }
+    # ── RAG ──
+    rag_ctx = None
+    if messages and messages[-1].get("role") == "user":
+        query = messages[-1].get("content", "")
+        if query.strip():
+            rag_ctx = _rag_context(query, k=rag_k)
 
-    exec_prompt = None
-    if enable_execution:
-        exec_prompt = {
-            "role": "system",
-            "content": (
-                "You can execute Python code to test your solutions. "
-                "To run code, wrap it in <execute> tags like: <execute>print('hello')</execute>. "
-                "The system will run it and provide the output in the next message."
-            ),
-        }
+    # ── Assemble message list ──
+    system_msg = {"role": "system", "content": _build_system(enable_execution, rag_ctx)}
+    full_messages = [system_msg] + [
+        m for m in messages if m.get("role") != "system"   # strip old system injections
+    ]
 
-    # add RAG context when available
-    rag_context = []
+    logger.info(f"Generating | temp={temperature} max_tokens={max_tokens} rag={'yes' if rag_ctx else 'no'}")
+    t0 = time.time()
+    token_count = 0
+
+    # ── Stream ──
     try:
-        if messages and messages[-1].get("role") == "user":
-            query = messages[-1].get("content", "")
-            snippets = retrieve(query, k=4)
-            if snippets:
-                context_text = "\n\n".join([f"Source: {item['path']}\n{item['text']}" for item in snippets])
-                rag_context.append({
-                    "role": "system",
-                    "content": (
-                        "When answering this user query about Python, reference the following documentation snippets. "
-                        "If the answer is in the docs, quote them and cite paths. "
-                        "Do not hallucinate facts outside the referenced docs unless absolutely needed.\n\n"
-                        + context_text
-                    ),
-                })
-    except Exception:
-        # If RAG fails, continue without docs
-        rag_context = []
+        response = llm.create_chat_completion(
+            messages=full_messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+            stop=["</s>", "<|im_end|>"],
+        )
 
-    full_messages = [agent_system_prompt]
-    if cot_prompt is not None:
-        full_messages.append(cot_prompt)
-    if exec_prompt is not None:
-        full_messages.append(exec_prompt)
-    full_messages += rag_context + messages
+        for chunk in response:
+            delta = chunk.get("choices", [{}])[0].get("delta", {})
+            token = delta.get("content", "")
+            if token:
+                token_count += 1
+                yield token
 
-    completion_stream = llm.create_chat_completion(
-        messages=full_messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        stream=stream,
-    )
-
-    if stream:
-        for chunk in completion_stream:
-            yield chunk["choices"][0].get("delta", {}).get("content", "")
-    else:
-        text = completion_stream["choices"][0]["message"]["content"]
-        yield text
-
-
-# Backward compatibility helper
-def generate_response(prompt, temperature=0.8, max_tokens=512):
-    return generate_agentic_response([{"role": "user", "content": prompt}], temperature, max_tokens, stream=True)
+    except Exception as exc:
+        logger.error(f"Streaming error: {exc}")
+        yield f"\n\n⚠️ Generation error: {exc}"
+    finally:
+        elapsed = time.time() - t0
+        tps = token_count / elapsed if elapsed > 0 else 0
+        logger.info(f"Done | {token_count} tokens | {elapsed:.2f}s | {tps:.1f} tok/s")
+        # Yield metadata as a special sentinel for the UI to pick up
+        yield f"\x00STATS:{token_count}:{elapsed:.2f}:{tps:.1f}"
