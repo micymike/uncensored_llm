@@ -40,19 +40,6 @@ st.markdown("""
 /* Monospace terminal feel for code */
 code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85rem; }
 
-/* Thinking block styling */
-.thinking-block {
-    background: #1a1a2e;
-    border-left: 3px solid #7c3aed;
-    border-radius: 6px;
-    padding: 8px 14px;
-    font-size: 0.82rem;
-    color: #a78bfa;
-    font-family: monospace;
-    white-space: pre-wrap;
-    margin-bottom: 8px;
-}
-
 /* Stats badge */
 .stat-badge {
     display: inline-block;
@@ -93,7 +80,6 @@ with st.sidebar:
 
     st.subheader("Modes")
     agentic     = st.checkbox("Agentic Mode",           value=True)
-    deep_think  = st.checkbox("Show Thinking (CoT)",    value=True)
     enable_exec = st.checkbox("Code Execution",         value=False)
     yolo_mode   = st.checkbox("YOLO Auto-fix",          value=False)
     if yolo_mode:
@@ -120,7 +106,6 @@ if "terminal_log" not in st.session_state: st.session_state.terminal_log = []
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 STATS_RE   = re.compile(r"\x00STATS:(\d+):([0-9.]+):([0-9.]+)$")
-THINK_RE   = re.compile(r"<thinking>(.*?)</thinking>", re.S)
 EXEC_RE    = re.compile(r"<execute>(.*?)</execute>",   re.S)
 
 
@@ -132,28 +117,14 @@ def strip_sentinel(text: str):
     return text, None
 
 
-def render_message(text: str, stats=None, show_thinking: bool = True):
+def render_message(text: str, stats=None):
     """
     Render a completed assistant message:
-      - Collapse <thinking> into an expander
-      - Show remaining markdown + code blocks
+      - Show markdown + code blocks
       - Show stats badge
     """
-    # Extract thinking blocks
-    thinking_blocks = THINK_RE.findall(text)
-    clean_text = THINK_RE.sub("", text).strip()
-
-    # Show thinking in expander
-    if show_thinking and thinking_blocks:
-        with st.expander("🧠 Chain of Thought", expanded=False):
-            for block in thinking_blocks:
-                st.markdown(
-                    f'<div class="thinking-block">{block.strip()}</div>',
-                    unsafe_allow_html=True,
-                )
-
     # Render main response
-    _render_markdown_with_code(clean_text)
+    _render_markdown_with_code(text)
 
     # Stats badge
     if stats:
@@ -243,7 +214,6 @@ for msg in st.session_state.messages:
             render_message(
                 msg.get("content", ""),
                 stats=msg.get("stats"),
-                show_thinking=deep_think,
             )
         else:
             st.markdown(msg.get("content", ""))
@@ -274,7 +244,6 @@ if user_prompt:
                 temperature    = temp,
                 max_tokens     = max_tokens,
                 stream         = True,
-                chain_of_thought = deep_think,
                 enable_execution = enable_exec,
                 rag_k          = rag_k,
             )
@@ -284,9 +253,7 @@ if user_prompt:
                 raw_output += token
                 # Don't render sentinel tokens
                 if "\x00STATS:" not in raw_output:
-                    # Strip any partial <thinking> for display
-                    display = THINK_RE.sub("", raw_output).strip()
-                    stream_placeholder.markdown(display + " ▌")
+                    stream_placeholder.markdown(raw_output + " ▌")
 
             # ── Post-stream processing ──
             clean_output, stats = strip_sentinel(raw_output)
@@ -305,7 +272,7 @@ if user_prompt:
 
             # ── Final render ──
             stream_placeholder.empty()
-            render_message(clean_output, stats=stats, show_thinking=deep_think)
+            render_message(clean_output, stats=stats)
 
             # Save to history
             st.session_state.messages.append({
