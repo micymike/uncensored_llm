@@ -1,5 +1,5 @@
 """
-app.py — Mimo Agentic Chat UI (Production)
+app.py — Mimo Agentic Chat UI (Production) + OpenAI-compatible API
 
 Improvements over v1:
   - Correct token-level streaming (llama-cpp delta extraction)
@@ -9,14 +9,26 @@ Improvements over v1:
   - YOLO auto-fix loop with depth limit
   - Clean message history (no stale system injections in UI)
   - Mobile-friendly layout
+  - OpenAI-compatible API endpoints for Cline integration
 """
 
 import re
 import time
 import logging
+import threading
+import subprocess
+import sys
 from datetime import datetime
+from typing import Dict, List, Optional, Any
 
 import streamlit as st
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+
+# Import Mimo's core functionality
+from main import get_llm, _rag_context, _build_system
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -33,6 +45,190 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ─── OpenAI API Components ───────────────────────────────────────────────────
+
+# API Models
+class ChatMessage(BaseModel):
+    role: str = Field(..., description="Message role: 'system', 'user', or 'assistant'")
+    content: str = Field(..., description="Message content")
+
+class ChatCompletionRequest(BaseModel):
+    model: str = Field(default="mimo", description="Model name")
+    messages: List[ChatMessage] = Field(..., description="List of chat messages")
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="Sampling temperature")
+    max_tokens: int = Field(default=1024, ge=1, le=2048, description="Maximum tokens")
+    stream: bool = Field(default=False, description="Enable streaming")
+    stop: Optional[List[str]] = Field(default=None, description="Stop sequences")
+
+class ChatCompletionChoice(BaseModel):
+    index: int
+    message: Optional[Dict[str, Any]] = None
+    delta: Optional[Dict[str, Any]] = None
+    finish_reason: str
+
+class UsageInfo(BaseModel):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+class ChatCompletionResponse(BaseModel):
+    id: str
+    object: str = "chat.completion"
+    created: int
+    model: str
+    choices: List[ChatCompletionChoice]
+    usage: UsageInfo
+
+# FastAPI App
+api_app = FastAPI(
+    title="Mimo API",
+    description="OpenAI-compatible API for Mimo AI Agent",
+    version="1.0.0",
+)
+
+# CORS middleware
+api_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# API Helper Functions
+def generate_response_id() -> str:
+    """Generate a unique response ID in OpenAI format."""
+    return f"chatcmpl-{int(time.time())}-{hash(str(time.time())) % 10000:04d}"
+
+def estimate_tokens(text: str) -> int:
+    """Rough token estimation."""
+    return len(text.split()) * 1.3
+
+# API Endpoints
+@api_app.get("/api/health")
+async def api_health_check():
+    """API health check endpoint."""
+    try:
+        llm = get_llm()
+        return {
+            "status": "healthy",
+            "model_loaded": True,
+            "service": "mimo-api"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Service unavailable: {e}")
+
+@api_app.get("/api/v1/models")
+async def list_models():
+    """List available models."""
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": "mimo",
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "mimo",
+                "permission": [],
+                "root": "mimo",
+                "parent": None
+            }
+        ]
+    }
+
+@api_app.post("/api/v1/chat/completions")
+async def create_chat_completion(request: ChatCompletionRequest):
+    """Create chat completion."""
+    try:
+        # Convert messages to Mimo format
+        mimo_messages = [
+            {"role": msg.role, "content": msg.content} 
+            for msg in request.messages
+        ]
+        
+        # Get RAG context
+        rag_ctx = None
+        if mimo_messages and mimo_messages[-1].get("role") == "user":
+            query = mimo_messages[-1].get("content", "")
+            if query.strip():
+                rag_ctx = _rag_context(query, k=3)
+        
+        # Build system prompt
+        system_content = _build_system(False, rag_ctx)
+        
+        # Ensure system message is first
+        if mimo_messages and mimo_messages[0].get("role") != "system":
+            mimo_messages.insert(0, {"role": "system", "content": system_content})
+        elif mimo_messages:
+            mimo_messages[0]["content"] = system_content
+        
+        # Get model and generate response
+        llm = get_llm()
+        response_id = generate_response_id()
+        created_time = int(time.time())
+        
+        # Estimate prompt tokens
+        prompt_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in mimo_messages])
+        prompt_tokens = int(estimate_tokens(prompt_text))
+        
+        # Non-streaming response (simplified for now)
+        completion_text = ""
+        token_count = 0
+        
+        response = llm.create_chat_completion(
+            messages=mimo_messages,
+            temperature=request.temperature,
+            max_tokens=request.max_tokens,
+            stream=False,
+            stop=request.stop or ["</s>", "<|im_end|>"],
+        )
+        
+        for chunk in response:
+            delta = chunk.get("choices", [{}])[0].get("delta", {})
+            token = delta.get("content", "")
+            if token:
+                completion_text += token
+                token_count += 1
+        
+        completion_tokens = token_count
+        
+        return ChatCompletionResponse(
+            id=response_id,
+            created=created_time,
+            model=request.model,
+            choices=[
+                ChatCompletionChoice(
+                    index=0,
+                    message={"role": "assistant", "content": completion_text},
+                    finish_reason="stop"
+                )
+            ],
+            usage=UsageInfo(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens
+            )
+        )
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Generation failed: {e}")
+
+# API Server Thread
+def start_api_server():
+    """Start the API server in a separate thread."""
+    logger.info("Starting API server on port 8000...")
+    uvicorn.run(
+        api_app,
+        host="0.0.0.0",
+        port=8000,
+        log_level="warning",
+        access_log=False
+    )
+
+# Start API server in background thread
+api_thread = threading.Thread(target=start_api_server, daemon=True)
+api_thread.start()
 
 # ─── Custom CSS ───────────────────────────────────────────────────────────────
 st.markdown("""
