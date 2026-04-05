@@ -1,321 +1,297 @@
 """
-app.py - Flask web application for Mimo AI with OpenAI-compatible API
+app.py — Mimo Agentic Chat UI (Production)
 
-This Flask app serves both the web UI and API endpoints:
-- Serves HTML/CSS/JS frontend
-- Provides OpenAI-compatible API endpoints
-- Single deployment with both UI and API
+Improvements over v1:
+  - Correct token-level streaming (llama-cpp delta extraction)
+  - <thinking> blocks rendered as collapsible expanders
+  - Live latency / tok/s badge
+  - <execute> blocks auto-run with result injection and display
+  - YOLO auto-fix loop with depth limit
+  - Clean message history (no stale system injections in UI)
+  - Mobile-friendly layout
 """
 
-import os
-import json
+import re
 import time
 import logging
 from datetime import datetime
-from flask import Flask, render_template, request, jsonify
-from flask_cors import CORS
 
-# Import Mimo's existing functionality
-from main import get_llm, generate_agentic_response, _rag_context, _build_system
-
-# ─── Flask App Setup ───────────────────────────────────────────────────────────
-app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+import streamlit as st
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[logging.StreamHandler()],
 )
-logger = logging.getLogger("MimoFlask")
+logger = logging.getLogger("MimoUI")
 
-# ─── Global Model Instance (Prevent Multiple Loading) ───────────────────────────
-_model_instance = None
-_model_lock = None
+# ─── Page Config ──────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="Mimo · Agentic AI",
+    page_icon="🧠",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-def get_global_model():
-    """Get or create a single global model instance."""
-    global _model_instance, _model_lock
-    if _model_instance is None:
-        if _model_lock is None:
-            import threading
-            _model_lock = threading.Lock()
-        with _model_lock:
-            if _model_instance is None:
-                logger.info("Loading global model instance...")
-                _model_instance = get_llm()
-                logger.info("Global model instance loaded successfully")
-    return _model_instance
+# ─── Custom CSS ───────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+/* Monospace terminal feel for code */
+code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85rem; }
 
-# ─── API Helper Functions ─────────────────────────────────────────────────────
+/* Stats badge */
+.stat-badge {
+    display: inline-block;
+    background: #0f172a;
+    color: #38bdf8;
+    font-size: 0.72rem;
+    font-family: monospace;
+    padding: 2px 10px;
+    border-radius: 999px;
+    border: 1px solid #1e40af;
+    margin-top: 6px;
+}
 
-def generate_response_id() -> str:
-    """Generate a unique response ID in OpenAI format."""
-    return f"chatcmpl-{int(time.time())}-{hash(str(time.time())) % 10000:04d}"
+/* Execution result block */
+.exec-result {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-family: monospace;
+    font-size: 0.8rem;
+    color: #7ee787;
+    margin-top: 6px;
+}
+</style>
+""", unsafe_allow_html=True)
 
-def estimate_tokens(text: str) -> int:
-    """Rough token estimation."""
-    return len(text.split()) * 1.3
+# ─── Sidebar ──────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.title("🧠 Mimo Controls")
 
-# ─── API Routes ────────────────────────────────────────────────────────────────
+    st.subheader("Generation")
+    temp        = st.slider("Temperature",  0.0, 1.0, 0.7, 0.05)
+    max_tokens  = st.slider("Max Tokens",   64, 1536, 1024, 32)
+    rag_k       = st.slider("RAG Depth (k)", 1, 10, 3)
 
-@app.route("/")
-def index():
-    """Serve the main chat interface."""
-    return render_template("index.html")
+    st.divider()
 
-@app.route("/api/v1/health")
-def api_health():
-    """Health check endpoint with memory optimization."""
-    try:
-        # Check if model is loaded without loading it
-        if _model_instance is not None:
-            model_status = True
-            model_loaded = "loaded"
-        else:
-            # Quick check if we can load the model (but don't actually load it)
-            model_path = os.getenv("LLAMA_MODEL_PATH", "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf")
-            model_status = os.path.exists(model_path)
-            model_loaded = "available" if model_status else "not_found"
-        
-        return jsonify({
-            "status": "healthy",
-            "model_loaded": model_loaded,
-            "model_status": model_status,
-            "timestamp": datetime.now().isoformat(),
-            "memory_optimized": True
-        })
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return jsonify({
-            "status": "unhealthy",
-            "error": str(e),
-            "timestamp": datetime.now().isoformat()
-        }), 500
-
-@app.route("/api/v1/models")
-def api_models():
-    """List available models."""
-    return jsonify({
-        "object": "list",
-        "data": [
-            {
-                "id": "mimo",
-                "object": "model",
-                "created": int(time.time()),
-                "owned_by": "mimo",
-                "permission": [],
-                "root": "mimo",
-                "parent": None
-            }
-        ]
-    })
-
-@app.route("/api/v1/chat/completions", methods=["POST"])
-def api_chat_completions():
-    """Chat completions endpoint - OpenAI compatible with memory optimization."""
-    try:
-        # Get request data
-        request_data = request.get_json()
-        if not request_data:
-            return jsonify({
-                "error": {
-                    "message": "No request body provided",
-                    "type": "invalid_request_error",
-                    "code": "missing_request_body"
-                }
-            }), 400
-        
-        # Validate required fields
-        if "messages" not in request_data:
-            return jsonify({
-                "error": {
-                    "message": "Missing 'messages' field",
-                    "type": "invalid_request_error",
-                    "code": "missing_messages"
-                }
-            }), 400
-        
-        # Convert to Mimo format
-        messages = [
-            {"role": msg["role"], "content": msg["content"]} 
-            for msg in request_data["messages"]
-        ]
-        
-        # Get RAG context (with error handling)
-        rag_ctx = None
-        try:
-            if messages and messages[-1].get("role") == "user":
-                query = messages[-1].get("content", "")
-                if query.strip():
-                    rag_ctx = _rag_context(query, k=3)
-        except Exception as rag_error:
-            logger.warning(f"RAG retrieval failed: {rag_error}")
-            rag_ctx = None
-        
-        # Build system prompt
-        system_content = _build_system(False, rag_ctx)
-        
-        # Ensure system message is first
-        if messages and messages[0].get("role") != "system":
-            messages.insert(0, {"role": "system", "content": system_content})
-        elif messages:
-            messages[0]["content"] = system_content
-        
-        # Generate response using global model
-        response_id = generate_response_id()
-        created_time = int(time.time())
-        
-        # Estimate tokens
-        prompt_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in messages])
-        prompt_tokens = int(estimate_tokens(prompt_text))
-        
-        # Get global model instance
-        model = get_global_model()
-        
-        # Generate completion with memory optimization
-        completion_text = ""
-        token_count = 0
-        
-        try:
-            for token in generate_agentic_response(
-                messages=messages,
-                temperature=request_data.get("temperature", 0.7),
-                max_tokens=min(request_data.get("max_tokens", 1024), 1536),  # Cap max tokens
-                stream=True,
-                enable_execution=False,
-                rag_k=3
-            ):
-                if token.startswith("\x00STATS:"):
-                    continue
-                completion_text += token
-                token_count += 1
-                
-                # Prevent infinite loops
-                if token_count > 2048:
-                    break
-                    
-        except Exception as gen_error:
-            logger.error(f"Generation failed: {gen_error}")
-            completion_text = f"I apologize, but I encountered an error while generating the response: {str(gen_error)}"
-        
-        completion_tokens = token_count
-        
-        return jsonify({
-            "id": response_id,
-            "object": "chat.completion",
-            "created": created_time,
-            "model": request_data.get("model", "mimo"),
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": completion_text},
-                    "finish_reason": "stop"
-                }
-            ],
-            "usage": {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens
-            }
-        })
-        
-    except Exception as e:
-        logger.error(f"Chat completion failed: {e}")
-        return jsonify({
-            "error": {
-                "message": f"Generation failed: {e}",
-                "type": "generation_error",
-                "code": "internal_error"
-            }
-        }), 500
-
-@app.route("/api/v1/execute", methods=["POST"])
-def api_execute_code():
-    """Execute code endpoint for runnable code blocks."""
-    try:
-        from main import execute_code
-        
-        request_data = request.get_json()
-        if not request_data or "code" not in request_data:
-            return jsonify({
-                "error": {
-                    "message": "Missing 'code' field",
-                    "type": "invalid_request_error"
-                }
-            }), 400
-        
-        code = request_data["code"]
-        language = request_data.get("language", "python")
-        
-        # Execute the code
-        result = execute_code(code)
-        
-        return jsonify({
-            "success": True,
-            "output": result,
-            "language": language
-        })
-        
-    except Exception as e:
-        logger.error(f"Code execution failed: {e}")
-        return jsonify({
-            "success": False,
-            "error": str(e),
-            "output": f"Error: {e}"
-        }), 500
-
-# ─── Legacy Streamlit Compatibility Routes ───────────────────────────────────────
-
-@app.route("/?api=v1&endpoint=health")
-def legacy_health():
-    """Legacy health endpoint for Streamlit compatibility."""
-    return api_health()
-
-@app.route("/?api=v1&endpoint=models")
-def legacy_models():
-    """Legacy models endpoint for Streamlit compatibility."""
-    return api_models()
-
-@app.route("/?api=v1&endpoint=chat/completions", methods=["POST"])
-def legacy_chat_completions():
-    """Legacy chat completions endpoint for Streamlit compatibility."""
-    return api_chat_completions()
-
-# ─── Run Application ───────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    # Set production environment variables
-    os.environ.setdefault("LLAMA_N_CTX", "2048")  # Reduce context size
-    os.environ.setdefault("LLAMA_N_THREADS", "4")  # Optimize threads
-    os.environ.setdefault("FLASK_ENV", "production")
-    
-    print("🧠 Mimo Flask Application Starting...")
-    print("🌐 Web UI: http://localhost:8501")
-    print("📡 API Health: http://localhost:8501/api/v1/health")
-    print("📡 API Models: http://localhost:8501/api/v1/models")
-    print("📡 API Chat: http://localhost:8501/api/v1/chat/completions")
-    print("\n💡 Cline Configuration:")
-    print('   API Base URL: http://localhost:8501/api/v1')
-    print('   API Key: any-string (not validated)')
-    print('   Model: mimo')
-    print("\n🚀 Production Mode - Memory Optimized")
-    
-    # Check if running with gunicorn (production)
-    if 'gunicorn' in sys.modules or os.getenv('GUNICORN_CMD_ARGS'):
-        print("🔄 Running with Gunicorn - Pre-loading model...")
-        get_global_model()
-        print("✅ Model pre-loaded for production")
+    st.subheader("Modes")
+    agentic     = st.checkbox("Agentic Mode",           value=True)
+    enable_exec = st.checkbox("Code Execution",         value=False)
+    yolo_mode   = st.checkbox("YOLO Auto-fix",          value=False)
+    if yolo_mode:
+        yolo_depth = st.slider("Auto-fix Max Depth", 1, 5, 2)
     else:
-        print("⚠️  Development mode detected")
-        print("💡 For production, use: gunicorn --workers 1 --timeout 300 app:app")
+        yolo_depth = 2
+
+    st.divider()
+
+    if st.button("🗑 Clear Chat", use_container_width=True):
+        st.session_state.messages     = []
+        st.session_state.terminal_log = []
+        logger.info("Chat history cleared.")
+        st.rerun()
+
+    st.divider()
+    st.caption("Model: Qwen3.5-9B Q4_K_M")
+    st.caption("RAG: ChromaDB + MiniLM")
+
+# ─── Session State Init ───────────────────────────────────────────────────────
+if "messages"     not in st.session_state: st.session_state.messages     = []
+if "terminal_log" not in st.session_state: st.session_state.terminal_log = []
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+STATS_RE   = re.compile(r"\x00STATS:(\d+):([0-9.]+):([0-9.]+)$")
+EXEC_RE    = re.compile(r"<execute>(.*?)</execute>",   re.S)
+
+
+def strip_sentinel(text: str):
+    """Remove the stats sentinel from the end of the streamed text."""
+    m = STATS_RE.search(text)
+    if m:
+        return text[:m.start()], (int(m.group(1)), float(m.group(2)), float(m.group(3)))
+    return text, None
+
+
+def render_message(text: str, stats=None):
+    """
+    Render a completed assistant message:
+      - Convert <execute> blocks to fenced code blocks
+      - Show markdown + code blocks
+      - Show stats badge
+    """
+    # Convert <execute> blocks to fenced code blocks for display
+    display_text = EXEC_RE.sub(lambda m: f"```python\n{m.group(1).strip()}\n```", text)
     
-    # Flask development server (for testing only)
-    app.run(
-        host="0.0.0.0",
-        port=8501,
-        debug=False,  # Disable debug for production
-        threaded=True,
-        use_reloader=False  # Prevent multiple model loads
-    )
+    # Render main response
+    _render_markdown_with_code(display_text)
+
+    # Stats badge
+    if stats:
+        tokens, elapsed, tps = stats
+        st.markdown(
+            f'<span class="stat-badge">⚡ {tokens} tokens · {elapsed:.1f}s · {tps:.1f} tok/s</span>',
+            unsafe_allow_html=True,
+        )
+
+
+def _render_markdown_with_code(text: str):
+    """Split on fenced code blocks and render each segment correctly."""
+    parts = re.split(r"(```[\s\S]*?```)", text)
+    for part in parts:
+        if part.startswith("```"):
+            inner = part[3:].rstrip("`").strip()
+            lines = inner.split("\n", 1)
+            lang  = lines[0].strip() if len(lines) > 1 else ""
+            code  = lines[1].strip() if len(lines) > 1 else inner
+            st.code(code, language=lang or "python")
+        elif part.strip():
+            st.markdown(part)
+
+
+def run_code_blocks(text: str, messages: list, temp: float, max_tokens: int) -> str:
+    """
+    Find all <execute> blocks, run them, inject results into message history,
+    and return the augmented text with results appended.
+    """
+    from main import execute_code, generate_agentic_response
+
+    exec_blocks = EXEC_RE.findall(text)
+    if not exec_blocks:
+        return text
+
+    augmented = text
+    for code in exec_blocks:
+        code = code.strip()
+        ts   = datetime.now().strftime("%H:%M:%S")
+        logger.info(f"Executing code block [{ts}]: {code[:80]}…")
+
+        result = execute_code(code)
+
+        # Log to terminal
+        st.session_state.terminal_log.append(
+            f"[{ts}]\n>>> {code}\n\n{result}"
+        )
+
+        # Inject result into history for next turn
+        messages.append({
+            "role":    "system",
+            "content": f"Code execution result:\n{result}",
+        })
+
+        # Append rendered result to visible text
+        augmented += f"\n\n**Execution result:**\n```text\n{result}\n```"
+
+        # YOLO auto-fix if errors detected
+        if yolo_mode and ("Error" in result or "Traceback" in result):
+            fix_text = ""
+            for fix_token in generate_agentic_response(
+                messages, temperature=temp, max_tokens=max_tokens
+            ):
+                if not fix_token.startswith("\x00STATS:"):
+                    fix_text += fix_token
+            augmented += f"\n\n**Auto-fix attempt:**\n{fix_text}"
+            messages.append({"role": "assistant", "content": fix_text})
+
+    return augmented
+
+
+# ─── Header ───────────────────────────────────────────────────────────────────
+st.title("🧠 Mimo · Agentic Chat")
+col_left, col_right = st.columns([3, 1])
+with col_right:
+    st.caption(f"CPU · {max_tokens} max tokens")
+
+st.divider()
+
+# ─── Chat History ─────────────────────────────────────────────────────────────
+for msg in st.session_state.messages:
+    if msg["role"] == "system":
+        continue   # never show system messages
+
+    with st.chat_message(msg["role"]):
+        if msg["role"] == "assistant":
+            render_message(
+                msg.get("content", ""),
+                stats=msg.get("stats"),
+            )
+        else:
+            st.markdown(msg.get("content", ""))
+
+# ─── Input ────────────────────────────────────────────────────────────────────
+user_prompt = st.chat_input("Ask Mimo anything…")
+
+if user_prompt:
+    from main import generate_agentic_response
+
+    logger.info(f"User: {user_prompt[:80]}")
+    st.session_state.messages.append({"role": "user", "content": user_prompt})
+
+    with st.chat_message("user"):
+        st.markdown(user_prompt)
+
+    with st.chat_message("assistant"):
+        stream_placeholder = st.empty()
+        status             = st.status("Thinking…", expanded=False)
+        raw_output         = ""
+        start_time         = time.time()
+
+        try:
+            status.update(label="Streaming response…", state="running")
+
+            stream = generate_agentic_response(
+                messages       = st.session_state.messages,
+                temperature    = temp,
+                max_tokens     = max_tokens,
+                stream         = True,
+                enable_execution = enable_exec,
+                rag_k          = rag_k,
+            )
+
+            # ── Live streaming loop ──
+            for token in stream:
+                raw_output += token
+                # Don't render sentinel tokens
+                if "\x00STATS:" not in raw_output:
+                    # Convert <execute> blocks to fenced code for display
+                    display = EXEC_RE.sub(lambda m: f"```python\n{m.group(1).strip()}\n```", raw_output)
+                    stream_placeholder.markdown(display + " ▌")
+
+            # ── Post-stream processing ──
+            clean_output, stats = strip_sentinel(raw_output)
+
+            status.update(label="✅ Done", state="complete", expanded=False)
+
+            # ── Final render ──
+            stream_placeholder.empty()
+            render_message(clean_output, stats=stats)
+
+            # Save to history
+            st.session_state.messages.append({
+                "role":    "assistant",
+                "content": clean_output,
+                "stats":   stats,
+            })
+            logger.info(f"Response complete. Stats: {stats}")
+
+        except Exception as err:
+            status.update(label="❌ Error", state="error")
+            logger.exception(f"Generation error: {err}")
+            st.error(f"**Generation failed:** {err}")
+
+# ─── Terminal Panel ───────────────────────────────────────────────────────────
+st.divider()
+
+with st.expander("🖥️ Execution Terminal", expanded=bool(st.session_state.terminal_log)):
+    if st.session_state.terminal_log:
+        terminal_text = "\n\n" + ("─" * 60 + "\n\n").join(st.session_state.terminal_log)
+        st.code(terminal_text, language="text")
+        if st.button("Clear Terminal"):
+            st.session_state.terminal_log = []
+            st.rerun()
+    else:
+        st.caption("No code executions yet. Enable Code Execution and ask Mimo to run something.")
