@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mimo · Advanced AI Assistant</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #10b981;
+            --primary-dark: #059669;
+            --secondary: #34d399;
+            --accent: #6ee7b7;
+            --bg-dark: #000000;
+            --bg-darker: #0a0a0a;
+            --bg-card: rgba(16, 185, 129, 0.1);
+            --bg-card-hover: rgba(16, 185, 129, 0.15);
+            --text-primary: #ffffff;
+            --text-secondary: #9ca3af;
+            --text-muted: #6b7280;
+            --border: rgba(16, 185, 129, 0.2);
+            --border-hover: rgba(16, 185, 129, 0.4);
+            --shadow: rgba(0, 0, 0, 0.5);
+            --glass: rgba(255, 255, 255, 0.05);
+            --glass-border: rgba(255, 255, 255, 0.1);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* Animated background */
+        .bg-animation {
+            position: fixed;
+            width: 100%;
+            height: 100%;
+            top: 0;
+            left: 0;
+            z-index: 0;
+            background: linear-gradient(45deg, #000000 25%, transparent 25%, transparent 75%, #000000 75%, #000000),
+                        linear-gradient(45deg, #000000 25%, transparent 25%, transparent 75%, #000000 75%, #000000);
+            background-size: 60px 60px;
+            background-position: 0 0, 30px 30px;
+            opacity: 0.03;
+            animation: bgMove 20s linear infinite;
+        }
+
+        @keyframes bgMove {
+            0% { background-position: 0 0, 30px 30px; }
+            100% { background-position: 60px 60px, 90px 90px; }
+        }
+
+        /* Floating particles */
+        .particle {
+            position: fixed;
+            pointer-events: none;
+            opacity: 0;
+            animation: float 20s infinite;
+        }
+
+        @keyframes float {
+            0%, 100% { 
+                opacity: 0;
+                transform: translateY(100vh) scale(0);
+            }
+            10% { opacity: 0.4; }
+            90% { opacity: 0.4; }
+            100% { 
+                transform: translateY(-100vh) scale(1);
+            }
+        }
+
+        .glass-container {
+            background: var(--glass);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--glass-border);
+            border-radius: 20px;
+            box-shadow: 0 8px 32px var(--shadow);
+        }
+
+        .glass-card {
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(5, 150, 105, 0.05) 100%);
+            backdrop-filter: blur(15px);
+            -webkit-backdrop-filter: blur(15px);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            transition: all 0.3s ease;
+        }
+
+        .glass-card:hover {
+            border-color: var(--border-hover);
+            box-shadow: 0 12px 40px rgba(16, 185, 129, 0.2);
+            transform: translateY(-2px);
+        }
+
+        .message-bubble {
+            max-width: 70%;
+            word-wrap: break-word;
+            animation: messageSlide 0.3s ease-out;
+        }
+
+        @keyframes messageSlide {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .user-message {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+            color: white;
+            border-radius: 20px 20px 8px 20px;
+            box-shadow: 0 4px 20px rgba(16, 185, 129, 0.3);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .user-message::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(45deg, transparent 30%, rgba(255, 255, 255, 0.1) 50%, transparent 70%);
+            animation: shimmer 2s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        .assistant-message {
+            background: var(--glass-card);
+            border: 1px solid var(--border);
+            border-radius: 20px 20px 20px 8px;
+            position: relative;
+        }
+
+        .typing-indicator {
+            display: inline-flex;
+            align-items: center;
+            padding: 16px 20px;
+            background: var(--glass-card);
+            border: 1px solid var(--border);
+            border-radius: 20px 20px 20px 8px;
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.8; }
+            50% { opacity: 1; }
+        }
+
+        .typing-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--primary);
+            margin: 0 3px;
+            animation: typing 1.4s infinite;
+        }
+
+        .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes typing {
+            0%, 60%, 100% { 
+                opacity: 0.3;
+                transform: translateY(0);
+            }
+            30% { 
+                opacity: 1;
+                transform: translateY(-5px);
+            }
+        }
+
+        .code-block {
+            background: var(--bg-darker);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            margin: 12px 0;
+            font-family: 'Fira Code', 'Courier New', monospace;
+            font-size: 0.9em;
+            overflow-x: auto;
+            position: relative;
+        }
+
+        .code-block::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, var(--primary), var(--secondary), var(--primary));
+            animation: codeGlow 2s linear infinite;
+        }
+
+        @keyframes codeGlow {
+            0%, 100% { opacity: 0.5; }
+            50% { opacity: 1; }
+        }
+
+        .sidebar {
+            background: var(--glass-container);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--glass-border);
+        }
+
+        .control-slider {
+            appearance: none;
+            background: var(--border);
+            outline: none;
+            border-radius: 10px;
+            height: 6px;
+            transition: all 0.3s ease;
+        }
+
+        .control-slider::-webkit-slider-thumb {
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 2px 10px rgba(16, 185, 129, 0.5);
+            transition: all 0.3s ease;
+        }
+
+        .control-slider::-webkit-slider-thumb:hover {
+            transform: scale(1.2);
+            box-shadow: 0 4px 20px rgba(16, 185, 129, 0.7);
+        }
+
+        .stats-badge {
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.2) 0%, rgba(5, 150, 105, 0.1) 100%);
+            border: 1px solid var(--primary);
+            color: var(--accent);
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-family: 'Inter', monospace;
+            font-weight: 500;
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            animation: statsPulse 2s ease-in-out infinite;
+        }
+
+        @keyframes statsPulse {
+            0%, 100% { opacity: 0.8; }
+            50% { opacity: 1; }
+        }
+
+        .scroll-container {
+            scrollbar-width: thin;
+            scrollbar-color: var(--border) transparent;
+        }
+
+        .scroll-container::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .scroll-container::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .scroll-container::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 4px;
+            transition: all 0.3s ease;
+        }
+
+        .scroll-container::-webkit-scrollbar-thumb:hover {
+            background: var(--border-hover);
+        }
+
+        .input-container {
+            background: var(--glass-container);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--glass-border);
+            transition: all 0.3s ease;
+        }
+
+        .input-container:focus-within {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
+        }
+
+        .input-field {
+            background: transparent;
+            border: none;
+            outline: none;
+            color: var(--text-primary);
+            font-size: 16px;
+            transition: all 0.3s ease;
+        }
+
+        .input-field::placeholder {
+            color: var(--text-muted);
+        }
+
+        .send-button {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+            border: none;
+            border-radius: 12px;
+            color: white;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .send-button::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+            transition: left 0.5s;
+        }
+
+        .send-button:hover::before {
+            left: 100%;
+        }
+
+        .send-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(16, 185, 129, 0.4);
+        }
+
+        .send-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .status-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--primary);
+            animation: statusPulse 2s ease-in-out infinite;
+        }
+
+        @keyframes statusPulse {
+            0%, 100% { 
+                opacity: 0.5;
+                transform: scale(1);
+            }
+            50% { 
+                opacity: 1;
+                transform: scale(1.2);
+            }
+        }
+
+        .action-button {
+            background: var(--glass-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            color: var(--text-primary);
+            font-weight: 500;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .action-button::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(16, 185, 129, 0.1), transparent);
+            transition: left 0.5s;
+        }
+
+        .action-button:hover::before {
+            left: 100%;
+        }
+
+        .action-button:hover {
+            border-color: var(--primary);
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(16, 185, 129, 0.2);
+        }
+
+        .logo-container {
+            position: relative;
+            display: inline-block;
+        }
+
+        .logo-glow {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 60px;
+            height: 60px;
+            background: radial-gradient(circle, var(--primary) 0%, transparent 70%);
+            opacity: 0.3;
+            animation: logoGlow 3s ease-in-out infinite;
+        }
+
+        @keyframes logoGlow {
+            0%, 100% { 
+                opacity: 0.3;
+                transform: translate(-50%, -50%) scale(1);
+            }
+            50% { 
+                opacity: 0.6;
+                transform: translate(-50%, -50%) scale(1.2);
+            }
+        }
+
+        .thinking-animation {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .thinking-bar {
+            width: 3px;
+            height: 20px;
+            background: var(--primary);
+            border-radius: 2px;
+            animation: thinking 1s ease-in-out infinite;
+        }
+
+        .thinking-bar:nth-child(2) { animation-delay: 0.2s; }
+        .thinking-bar:nth-child(3) { animation-delay: 0.4s; }
+        .thinking-bar:nth-child(4) { animation-delay: 0.6s; }
+
+        @keyframes thinking {
+            0%, 100% { 
+                height: 8px;
+                opacity: 0.3;
+            }
+            50% { 
+                height: 20px;
+                opacity: 1;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Background animation -->
+    <div class="bg-animation"></div>
+    
+    <!-- Floating particles -->
+    <div id="particles"></div>
+
+    <div class="container mx-auto max-w-7xl h-screen flex items-center justify-center p-6 relative z-10">
+        <div class="grid grid-cols-1 lg:grid-cols-4 gap-6 w-full h-full">
+            <!-- Sidebar -->
+            <div class="lg:col-span-1">
+                <div class="sidebar h-full p-6 flex flex-col">
+                    <!-- Logo -->
+                    <div class="text-center mb-8">
+                        <div class="logo-container mb-4">
+                            <div class="logo-glow"></div>
+                            <div class="text-4xl relative z-10">🧠</div>
+                        </div>
+                        <h2 class="text-xl font-bold text-white mb-2">Mimo Controls</h2>
+                        <div class="flex items-center justify-center gap-2">
+                            <div class="status-indicator"></div>
+                            <span class="text-xs text-gray-400">Advanced AI Assistant</span>
+                        </div>
+                    </div>
+
+                    <!-- Generation Controls -->
+                    <div class="space-y-6 flex-1">
+                        <div>
+                            <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Generation</h3>
+                            
+                            <div class="space-y-4">
+                                <div>
+                                    <label class="text-xs text-gray-400 block mb-2">Temperature: <span id="tempValue" class="text-emerald-400">0.7</span></label>
+                                    <input type="range" id="temperature" class="control-slider w-full" min="0" max="1" step="0.05" value="0.7">
+                                </div>
+                                
+                                <div>
+                                    <label class="text-xs text-gray-400 block mb-2">Max Tokens: <span id="tokensValue" class="text-emerald-400">1024</span></label>
+                                    <input type="range" id="maxTokens" class="control-slider w-full" min="64" max="2048" step="32" value="1024">
+                                </div>
+                                
+                                <div>
+                                    <label class="text-xs text-gray-400 block mb-2">RAG Depth: <span id="ragValue" class="text-emerald-400">3</span></label>
+                                    <input type="range" id="ragK" class="control-slider w-full" min="1" max="10" step="1" value="3">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Modes -->
+                        <div>
+                            <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Modes</h3>
+                            
+                            <div class="space-y-3">
+                                <label class="flex items-center text-sm text-gray-300 cursor-pointer hover:text-emerald-400 transition-colors">
+                                    <input type="checkbox" id="agenticMode" checked class="mr-3 accent-emerald-500">
+                                    <span>Agentic Mode</span>
+                                </label>
+                                
+                                <label class="flex items-center text-sm text-gray-300 cursor-pointer hover:text-emerald-400 transition-colors">
+                                    <input type="checkbox" id="codeExec" class="mr-3 accent-emerald-500">
+                                    <span>Code Execution</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Actions -->
+                        <div class="space-y-3">
+                            <button id="clearChat" class="action-button w-full py-3 px-4 flex items-center justify-center">
+                                <i class="fas fa-trash mr-2"></i>
+                                Clear Chat
+                            </button>
+                            
+                            <button id="exportChat" class="action-button w-full py-3 px-4 flex items-center justify-center">
+                                <i class="fas fa-download mr-2"></i>
+                                Export Chat
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Model Info -->
+                    <div class="text-xs text-gray-500 space-y-2 border-t border-gray-800 pt-4">
+                        <p>Model: Qwen3.5-9B Q4_K_M</p>
+                        <p>RAG: ChromaDB + MiniLM</p>
+                        <p class="flex items-center">
+                            Status: <span id="modelStatus" class="ml-1 text-emerald-400">Online</span>
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Main Chat Area -->
+            <div class="lg:col-span-3 flex flex-col">
+                <div class="glass-card flex-1 flex flex-col">
+                    <!-- Header -->
+                    <div class="border-b border-gray-800 p-6">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <h1 class="text-2xl font-bold text-white flex items-center">
+                                    <span class="mr-3">🧠</span>
+                                    Mimo · Advanced AI
+                                </h1>
+                                <p class="text-gray-400 text-sm mt-1">Precision & Speed • CPU • <span id="maxTokensDisplay">1024</span> max tokens</p>
+                            </div>
+                            <div class="stats-badge flex items-center">
+                                <i class="fas fa-bolt mr-2"></i>
+                                <span id="statsDisplay">Ready</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Chat Messages -->
+                    <div id="chatMessages" class="flex-1 overflow-y-auto p-6 space-y-4 scroll-container">
+                        <div class="text-center text-gray-500 py-12">
+                            <div class="thinking-animation mb-4">
+                                <div class="thinking-bar"></div>
+                                <div class="thinking-bar"></div>
+                                <div class="thinking-bar"></div>
+                                <div class="thinking-bar"></div>
+                            </div>
+                            <p class="text-lg">Start a conversation with Mimo AI</p>
+                            <p class="text-sm text-gray-600 mt-2">Your advanced AI assistant is ready to help</p>
+                        </div>
+                    </div>
+
+                    <!-- Input Area -->
+                    <div class="border-t border-gray-800 p-6">
+                        <div class="input-container rounded-xl p-4">
+                            <div class="flex space-x-4">
+                                <input 
+                                    type="text" 
+                                    id="messageInput" 
+                                    placeholder="Ask Mimo anything..." 
+                                    class="input-field flex-1 px-4 py-3"
+                                    disabled
+                                >
+                                <button 
+                                    id="sendButton" 
+                                    class="send-button px-6 py-3 flex items-center"
+                                    disabled
+                                >
+                                    <i class="fas fa-paper-plane mr-2"></i>
+                                    Send
+                                </button>
+                            </div>
+                            <div class="mt-3 text-xs text-gray-500 flex items-center justify-between">
+                                <span>Press Enter to send, Shift+Enter for new line</span>
+                                <span class="text-emerald-400">• Advanced AI •</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

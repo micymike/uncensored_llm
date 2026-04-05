@@ -1,7 +1,7 @@
 """
 app.py - Flask web application for Mimo AI with OpenAI-compatible API
 
-This Flask app serves both the web UI and API endpoints:
+This replaces the Streamlit app with a Flask-based solution:
 - Serves HTML/CSS/JS frontend
 - Provides OpenAI-compatible API endpoints
 - Single deployment with both UI and API
@@ -186,40 +186,84 @@ def api_chat_completions():
             }
         }), 500
 
-@app.route("/api/v1/execute", methods=["POST"])
-def api_execute_code():
-    """Execute code endpoint for runnable code blocks."""
+@app.route("/api/v1/chat/stream", methods=["POST"])
+def api_chat_stream():
+    """Streaming chat endpoint."""
     try:
-        from main import execute_code
-        
         request_data = request.get_json()
-        if not request_data or "code" not in request_data:
-            return jsonify({
-                "error": {
-                    "message": "Missing 'code' field",
-                    "type": "invalid_request_error"
-                }
-            }), 400
+        if not request_data or "messages" not in request_data:
+            return jsonify({"error": "Invalid request"}), 400
         
-        code = request_data["code"]
-        language = request_data.get("language", "python")
+        # Convert to Mimo format
+        messages = [
+            {"role": msg["role"], "content": msg["content"]} 
+            for msg in request_data["messages"]
+        ]
         
-        # Execute the code
-        result = execute_code(code)
+        # Get RAG context
+        rag_ctx = None
+        if messages and messages[-1].get("role") == "user":
+            query = messages[-1].get("content", "")
+            if query.strip():
+                rag_ctx = _rag_context(query, k=3)
         
-        return jsonify({
-            "success": True,
-            "output": result,
-            "language": language
-        })
+        # Build system prompt
+        system_content = _build_system(False, rag_ctx)
+        
+        # Ensure system message is first
+        if messages and messages[0].get("role") != "system":
+            messages.insert(0, {"role": "system", "content": system_content})
+        elif messages:
+            messages[0]["content"] = system_content
+        
+        def generate():
+            response_id = generate_response_id()
+            created_time = int(time.time())
+            
+            # Send initial chunk
+            yield f"data: {json.dumps({
+                'id': response_id,
+                'object': 'chat.completion.chunk',
+                'created': created_time,
+                'model': 'mimo',
+                'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}]
+            })}\n\n"
+            
+            # Stream content
+            for token in generate_agentic_response(
+                messages=messages,
+                temperature=request_data.get("temperature", 0.7),
+                max_tokens=request_data.get("max_tokens", 1024),
+                stream=True,
+                enable_execution=False,
+                rag_k=3
+            ):
+                if token.startswith("\x00STATS:"):
+                    continue
+                yield f"data: {json.dumps({
+                    'id': response_id,
+                    'object': 'chat.completion.chunk',
+                    'created': created_time,
+                    'model': 'mimo',
+                    'choices': [{'index': 0, 'delta': {'content': token}, 'finish_reason': None}]
+                })}\n\n"
+            
+            # Send final chunk
+            yield f"data: {json.dumps({
+                'id': response_id,
+                'object': 'chat.completion.chunk',
+                'created': created_time,
+                'model': 'mimo',
+                'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]
+            })}\n\n"
+            yield "data: [DONE]\n\n"
+        
+        from flask import Response
+        return Response(generate(), mimetype='text/plain')
         
     except Exception as e:
-        logger.error(f"Code execution failed: {e}")
-        return jsonify({
-            "success": False,
-            "error": str(e),
-            "output": f"Error: {e}"
-        }), 500
+        logger.error(f"Stream failed: {e}")
+        return jsonify({"error": str(e)}), 500
 
 # ─── Legacy Streamlit Compatibility Routes ───────────────────────────────────────
 
@@ -242,17 +286,17 @@ def legacy_chat_completions():
 
 if __name__ == "__main__":
     print("🧠 Mimo Flask Application Starting...")
-    print("🌐 Web UI: http://localhost:8501")
-    print("📡 API Health: http://localhost:8501/api/v1/health")
-    print("📡 API Models: http://localhost:8501/api/v1/models")
-    print("📡 API Chat: http://localhost:8501/api/v1/chat/completions")
+    print("🌐 Web UI: http://localhost:5000")
+    print("📡 API Health: http://localhost:5000/api/v1/health")
+    print("📡 API Models: http://localhost:5000/api/v1/models")
+    print("📡 API Chat: http://localhost:5000/api/v1/chat/completions")
     print("\n💡 Cline Configuration:")
-    print('   API Base URL: http://localhost:8501/api/v1')
+    print('   API Base URL: http://localhost:5000/api/v1')
     print('   API Key: any-string (not validated)')
     print('   Model: mimo')
     
     app.run(
         host="0.0.0.0",
-        port=8501,
+        port=5000,
         debug=True
     )

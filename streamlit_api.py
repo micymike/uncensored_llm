@@ -155,27 +155,20 @@ def api_chat_completion(request_data: Dict) -> Dict:
 def handle_api_request():
     """Main API request handler - call this at the top of your app.py"""
     
-    # Check if this is an API request
+    # Check if this is an API request using query parameters
     query_params = st.query_params
     
     # Check for API path
     if "api" in query_params and query_params["api"] == "v1":
         
-        # Set response headers for API
-        if hasattr(st, 'set_page_config'):
-            try:
-                st.set_page_config(page_title="Mimo API", layout="centered")
-            except:
-                pass
+        # Set page config for API responses
+        try:
+            st.set_page_config(page_title="Mimo API", layout="centered")
+        except:
+            pass
         
         # Handle different endpoints
-        path_parts = []
-        if "endpoint" in query_params:
-            endpoint = query_params["endpoint"]
-        else:
-            # Try to get endpoint from URL path
-            # This is a workaround since Streamlit doesn't provide direct path access
-            endpoint = "info"
+        endpoint = query_params.get("endpoint", "info")
         
         if endpoint == "health":
             health = api_health_check()
@@ -188,57 +181,35 @@ def handle_api_request():
             return True
         
         elif endpoint == "chat/completions":
-            # Handle POST request
-            if hasattr(st, 'request') and st.request:
-                try:
-                    # Get request body
-                    if hasattr(st.request, 'get_json'):
-                        request_body = st.request.get_json()
-                    else:
-                        # Fallback for Streamlit Cloud
-                        # Try to get JSON from form data or other methods
-                        request_body = {}
-                    
-                    if not request_body:
-                        st.error("No request body provided")
-                        return True
-                    
-                    response = api_chat_completion(request_body)
-                    st.json(response)
-                    return True
-                    
-                except Exception as e:
-                    error_response = {
-                        "error": {
-                            "message": f"Request processing failed: {e}",
-                            "type": "request_error",
-                            "code": "bad_request"
-                        }
+            # For POST requests, we need to handle this differently in Streamlit
+            # Streamlit Cloud doesn't provide direct POST body access
+            
+            # Show usage information for GET requests
+            usage = {
+                "message": "Mimo API - Chat Completions Endpoint",
+                "status": "endpoint_available",
+                "method_required": "POST",
+                "usage": {
+                    "url": "https://ai.uniconnect-learninghub.co.ke/?api=v1&endpoint=chat/completions",
+                    "method": "POST",
+                    "headers": {
+                        "Content-Type": "application/json",
+                        "Authorization": "Bearer your-api-key"
+                    },
+                    "body_example": {
+                        "model": "mimo",
+                        "messages": [
+                            {"role": "user", "content": "Your message here"}
+                        ],
+                        "temperature": 0.7,
+                        "max_tokens": 1024
                     }
-                    st.json(error_response)
-                    return True
-            else:
-                # Show usage info for GET requests
-                usage = {
-                    "message": "This endpoint accepts POST requests",
-                    "usage": {
-                        "method": "POST",
-                        "headers": {
-                            "Content-Type": "application/json",
-                            "Authorization": "Bearer your-api-key"
-                        },
-                        "body": {
-                            "model": "mimo",
-                            "messages": [
-                                {"role": "user", "content": "Your message here"}
-                            ],
-                            "temperature": 0.7,
-                            "max_tokens": 1024
-                        }
-                    }
-                }
-                st.json(usage)
-                return True
+                },
+                "note": "Due to Streamlit Cloud limitations, POST requests may not work directly. Consider using the standalone API server for full functionality.",
+                "alternative": "Use python api_server.py for full OpenAI compatibility"
+            }
+            st.json(usage)
+            return True
         
         else:
             # API info
@@ -253,14 +224,12 @@ def handle_api_request():
                     "chat_completions": "/?api=v1&endpoint=chat/completions"
                 },
                 "model": "mimo",
-                "usage_examples": {
-                    "curl": '''curl -X POST "https://ai.uniconnect-learninghub.co.ke/?api=v1&endpoint=chat/completions" \\
-  -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer any-key" \\
-  -d '{
-    "model": "mimo",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'''
+                "status": "limited_functionality",
+                "note": "Streamlit Cloud has limitations for POST requests. Use standalone server for full API functionality.",
+                "standalone_server": {
+                    "file": "api_server.py",
+                    "usage": "python api_server.py",
+                    "url": "http://localhost:8000/v1"
                 }
             }
             st.json(api_info)
