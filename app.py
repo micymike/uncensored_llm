@@ -35,7 +35,8 @@ st.set_page_config(
 )
 
 # ─── Custom CSS ───────────────────────────────────────────────────────────────
-st.markdown("""
+st.markdown(
+    """
 <style>
 /* Monospace terminal feel for code */
 code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85rem; }
@@ -65,23 +66,29 @@ code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85rem
     margin-top: 6px;
 }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("🧠 Mimo Controls")
 
     st.subheader("Generation")
-    temp        = st.slider("Temperature",  0.0, 1.0, 0.7, 0.05)
-    max_tokens  = st.slider("Max Tokens",   64, 1536, 1024, 32)
-    rag_k       = st.slider("RAG Depth (k)", 1, 10, 3)
+    temp = st.slider("Temperature", 0.0, 1.0, 0.7, 0.05)
+    max_tokens = st.slider("Max Tokens", 64, 8192, 4096, 64)
+    rag_k = st.slider("RAG Depth (k)", 1, 10, 3)
 
     st.divider()
 
     st.subheader("Modes")
-    agentic     = st.checkbox("Agentic Mode",           value=True)
-    enable_exec = st.checkbox("Code Execution",         value=False)
-    yolo_mode   = st.checkbox("YOLO Auto-fix",          value=False)
+    agentic = st.checkbox("Agentic Mode", value=True)
+    if agentic:
+        max_iterations = st.slider("Max Iterations", 1, 10, 5)
+    else:
+        max_iterations = 1
+    enable_exec = st.checkbox("Code Execution", value=False)
+    yolo_mode = st.checkbox("YOLO Auto-fix", value=False)
     if yolo_mode:
         yolo_depth = st.slider("Auto-fix Max Depth", 1, 5, 2)
     else:
@@ -90,7 +97,7 @@ with st.sidebar:
     st.divider()
 
     if st.button("🗑 Clear Chat", use_container_width=True):
-        st.session_state.messages     = []
+        st.session_state.messages = []
         st.session_state.terminal_log = []
         logger.info("Chat history cleared.")
         st.rerun()
@@ -100,41 +107,74 @@ with st.sidebar:
     st.caption("RAG: ChromaDB + MiniLM")
 
 # ─── Session State Init ───────────────────────────────────────────────────────
-if "messages"     not in st.session_state: st.session_state.messages     = []
-if "terminal_log" not in st.session_state: st.session_state.terminal_log = []
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "terminal_log" not in st.session_state:
+    st.session_state.terminal_log = []
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-STATS_RE   = re.compile(r"\x00STATS:(\d+):([0-9.]+):([0-9.]+)$")
-EXEC_RE    = re.compile(r"<execute>(.*?)</execute>",   re.S)
+STATS_RE = re.compile(r"\x00STATS:(\d+):([0-9.]+):([0-9.]+):([0-9.]+)$")
+EXEC_RE = re.compile(r"<execute>(.*?)</execute>", re.S)
+THINK_RE = re.compile(r"<thinking>(.*?)</thinking>", re.S)
+TOOL_RE = re.compile(
+    r"<tool>\s*<tool_name>(\w+)</tool_name>\s*<arguments>(.+?)</arguments>\s*</tool>",
+    re.S,
+)
 
 
 def strip_sentinel(text: str):
     """Remove the stats sentinel from the end of the streamed text."""
     m = STATS_RE.search(text)
     if m:
-        return text[:m.start()], (int(m.group(1)), float(m.group(2)), float(m.group(3)))
+        # New format: iterations:token_count:elapsed:tps
+        return text[: m.start()], (
+            int(m.group(1)),  # iterations
+            int(m.group(2)),  # token_count
+            float(m.group(3)),  # elapsed
+            float(m.group(4)),  # tps
+        )
     return text, None
+
+
+def extract_thinking(text: str) -> tuple:
+    """Extract thinking blocks and return (clean_text, thinking_content)."""
+    thinking_blocks = THINK_RE.findall(text)
+    clean_text = THINK_RE.sub("", text)
+    return clean_text, thinking_blocks
 
 
 def render_message(text: str, stats=None):
     """
     Render a completed assistant message:
       - Convert <execute> blocks to fenced code blocks
+      - Show <thinking> blocks in collapsible expander
       - Show markdown + code blocks
       - Show stats badge
     """
+    # Extract and remove thinking blocks
+    display_text, thinking_blocks = extract_thinking(text)
+
     # Convert <execute> blocks to fenced code blocks for display
-    display_text = EXEC_RE.sub(lambda m: f"```python\n{m.group(1).strip()}\n```", text)
-    
+    display_text = EXEC_RE.sub(
+        lambda m: f"```python\n{m.group(1).strip()}\n```", display_text
+    )
+
+    # Render thinking in collapsible expander (Claude style)
+    if thinking_blocks:
+        with st.expander("🤔 Thinking", expanded=False):
+            for block in thinking_blocks:
+                st.markdown(block)
+
     # Render main response
     _render_markdown_with_code(display_text)
 
     # Stats badge
     if stats:
-        tokens, elapsed, tps = stats
+        iterations, tokens, elapsed, tps = stats
+        iter_info = f" · {iterations} iter" if iterations > 1 else ""
         st.markdown(
-            f'<span class="stat-badge">⚡ {tokens} tokens · {elapsed:.1f}s · {tps:.1f} tok/s</span>',
+            f'<span class="stat-badge">⚡ {tokens} tokens · {elapsed:.1f}s · {tps:.1f} tok/s{iter_info}</span>',
             unsafe_allow_html=True,
         )
 
@@ -146,8 +186,8 @@ def _render_markdown_with_code(text: str):
         if part.startswith("```"):
             inner = part[3:].rstrip("`").strip()
             lines = inner.split("\n", 1)
-            lang  = lines[0].strip() if len(lines) > 1 else ""
-            code  = lines[1].strip() if len(lines) > 1 else inner
+            lang = lines[0].strip() if len(lines) > 1 else ""
+            code = lines[1].strip() if len(lines) > 1 else inner
             st.code(code, language=lang or "python")
         elif part.strip():
             st.markdown(part)
@@ -167,21 +207,21 @@ def run_code_blocks(text: str, messages: list, temp: float, max_tokens: int) -> 
     augmented = text
     for code in exec_blocks:
         code = code.strip()
-        ts   = datetime.now().strftime("%H:%M:%S")
+        ts = datetime.now().strftime("%H:%M:%S")
         logger.info(f"Executing code block [{ts}]: {code[:80]}…")
 
         result = execute_code(code)
 
         # Log to terminal
-        st.session_state.terminal_log.append(
-            f"[{ts}]\n>>> {code}\n\n{result}"
-        )
+        st.session_state.terminal_log.append(f"[{ts}]\n>>> {code}\n\n{result}")
 
         # Inject result into history for next turn
-        messages.append({
-            "role":    "system",
-            "content": f"Code execution result:\n{result}",
-        })
+        messages.append(
+            {
+                "role": "system",
+                "content": f"Code execution result:\n{result}",
+            }
+        )
 
         # Append rendered result to visible text
         augmented += f"\n\n**Execution result:**\n```text\n{result}\n```"
@@ -211,7 +251,7 @@ st.divider()
 # ─── Chat History ─────────────────────────────────────────────────────────────
 for msg in st.session_state.messages:
     if msg["role"] == "system":
-        continue   # never show system messages
+        continue  # never show system messages
 
     with st.chat_message(msg["role"]):
         if msg["role"] == "assistant":
@@ -236,29 +276,49 @@ if user_prompt:
 
     with st.chat_message("assistant"):
         stream_placeholder = st.empty()
-        status             = st.status("Thinking…", expanded=False)
-        raw_output         = ""
-        start_time         = time.time()
+        status = st.status("Thinking…", expanded=False)
+        raw_output = ""
+        start_time = time.time()
 
         try:
             status.update(label="Streaming response…", state="running")
 
             stream = generate_agentic_response(
-                messages       = st.session_state.messages,
-                temperature    = temp,
-                max_tokens     = max_tokens,
-                stream         = True,
-                enable_execution = enable_exec,
-                rag_k          = rag_k,
+                messages=st.session_state.messages,
+                temperature=temp,
+                max_tokens=max_tokens,
+                stream=True,
+                enable_execution=enable_exec,
+                rag_k=rag_k,
+                agentic_mode=agentic,
+                max_iterations=max_iterations,
             )
 
             # ── Live streaming loop ──
+            thinking_placeholder = None
+            current_thinking = ""
+
             for token in stream:
                 raw_output += token
+
+                # Extract thinking blocks for live display
+                _, thinking_blocks = extract_thinking(raw_output)
+                if thinking_blocks and thinking_placeholder is None:
+                    thinking_placeholder = st.empty()
+                    current_thinking = thinking_blocks[-1]
+                    with thinking_placeholder.container():
+                        with st.expander("🤔 Thinking", expanded=True):
+                            st.markdown(current_thinking)
+
                 # Don't render sentinel tokens
                 if "\x00STATS:" not in raw_output:
+                    # Extract and hide thinking for live display
+                    clean_for_display, _ = extract_thinking(raw_output)
                     # Convert <execute> blocks to fenced code for display
-                    display = EXEC_RE.sub(lambda m: f"```python\n{m.group(1).strip()}\n```", raw_output)
+                    display = EXEC_RE.sub(
+                        lambda m: f"```python\n{m.group(1).strip()}\n```",
+                        clean_for_display,
+                    )
                     stream_placeholder.markdown(display + " ▌")
 
             # ── Post-stream processing ──
@@ -271,11 +331,13 @@ if user_prompt:
             render_message(clean_output, stats=stats)
 
             # Save to history
-            st.session_state.messages.append({
-                "role":    "assistant",
-                "content": clean_output,
-                "stats":   stats,
-            })
+            st.session_state.messages.append(
+                {
+                    "role": "assistant",
+                    "content": clean_output,
+                    "stats": stats,
+                }
+            )
             logger.info(f"Response complete. Stats: {stats}")
 
         except Exception as err:
@@ -294,4 +356,6 @@ with st.expander("🖥️ Execution Terminal", expanded=bool(st.session_state.te
             st.session_state.terminal_log = []
             st.rerun()
     else:
-        st.caption("No code executions yet. Enable Code Execution and ask Mimo to run something.")
+        st.caption(
+            "No code executions yet. Enable Code Execution and ask Mimo to run something."
+        )
